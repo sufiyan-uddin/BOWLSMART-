@@ -37,7 +37,7 @@ Follow these step-by-step instructions to get both the frontend and backend up a
 ### 1. Clone the repository
 Open a terminal and clone the repository:
 ```bash
-git clone <YOUR-GITHUB-REPOSITORY-URL>
+git clone https://github.com/sufiyan-uddin/BOWLSMART-.git
 cd bowling-biomechanics
 ```
 
