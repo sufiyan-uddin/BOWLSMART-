@@ -23,8 +23,8 @@ class VideoProcessor:
         duration = frame_count / fps if fps > 0 else 0
         cap.release()
 
-        if width < 640 or height < 480:
-            raise ValueError(f"Video resolution too low: {width}x{height}. Minimum 640x480 required.")
+        # if width < 640 or height < 480:
+        #     raise ValueError(f"Video resolution too low: {width}x{height}. Minimum 640x480 required.")
         if duration > 30:
             raise ValueError(f"Video too long: {duration:.1f}s. Maximum 30 seconds.")
         if duration < 2:

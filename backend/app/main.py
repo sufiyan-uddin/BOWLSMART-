@@ -19,6 +19,7 @@ from typing import Optional
 import uuid
 import os
 import asyncio
+import numpy as np
 
 from app.config import settings
 from app.services.video_processor import VideoProcessor
@@ -53,6 +54,21 @@ os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 
 # In-memory job store (replace with Redis/DB in production)
 analysis_jobs: dict = {}
+
+def convert_numpy(obj):
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {k: convert_numpy(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy(v) for v in obj]
+    elif isinstance(obj, tuple):
+        return tuple(convert_numpy(v) for v in obj)
+    return obj
 
 
 class BowlerProfile(BaseModel):
@@ -171,19 +187,26 @@ async def run_analysis_pipeline(
     job_id: str, video_path: str, bowler_profile: BowlerProfile, camera_angle: str
 ):
     """
-    The main analysis pipeline. Runs as a background task.
-    Each step updates progress so the frontend can poll for status.
+    Main analysis pipeline — runs as a FastAPI background task.
+    All CPU-heavy synchronous steps are offloaded to a thread pool via
+    run_in_executor so the event loop stays free to serve status polls.
     """
     job = analysis_jobs[job_id]
+    loop = asyncio.get_event_loop()
+
+    def _run(fn, *args):
+        """Helper: run a sync callable in the default thread pool."""
+        import functools
+        return loop.run_in_executor(None, functools.partial(fn, *args))
 
     try:
-        # Step 1: Video validation & frame extraction
+        # ── Step 1: Validate & extract frames ────────────────────────────
         job["current_step"] = "Validating video..."
         job["progress"] = 5
 
         video_processor = VideoProcessor()
-        video_info = video_processor.validate_video(video_path)
-        frames = video_processor.extract_frames(video_path, target_fps=30)
+        video_info = await _run(video_processor.validate_video, video_path)
+        frames = await _run(video_processor.extract_frames, video_path, 10)  # 10fps is enough for phase analysis
 
         job["progress"] = 15
         job["current_step"] = f"Extracted {len(frames)} frames"
@@ -193,13 +216,13 @@ async def run_analysis_pipeline(
                 f"Only {len(frames)} frames extracted. Video may be too short or corrupted."
             )
 
-        # Step 2: Pose detection
+        # ── Step 2: Pose detection ────────────────────────────────────────
         job["current_step"] = "Running pose detection..."
         job["progress"] = 25
 
         pose_detector = PoseDetector()
-        landmarks_sequence = pose_detector.detect_poses(frames)
-        smoothed_landmarks = pose_detector.smooth_landmarks(landmarks_sequence)
+        landmarks_sequence = await _run(pose_detector.detect_poses, frames)
+        smoothed_landmarks = await _run(pose_detector.smooth_landmarks, landmarks_sequence)
 
         valid_count = sum(1 for lm in smoothed_landmarks if lm is not None)
         job["progress"] = 45
@@ -211,51 +234,50 @@ async def run_analysis_pipeline(
                 "Ensure the bowler is clearly visible and well-lit."
             )
 
-        # Step 3: Phase detection
+        # ── Step 3: Phase detection ───────────────────────────────────────
         job["current_step"] = "Detecting bowling phases..."
         job["progress"] = 50
 
         phase_detector = PhaseDetector()
-        phases = phase_detector.detect_phases(
+        phases = await _run(
+            phase_detector.detect_phases,
             smoothed_landmarks,
             video_info["fps"],
             bowler_profile.dominant_arm,
         )
-
         job["progress"] = 60
 
-        # Step 4: Biomechanics calculations
+        # ── Step 4: Biomechanics ──────────────────────────────────────────
         job["current_step"] = "Calculating biomechanics..."
         job["progress"] = 65
 
         bio_calculator = BiomechanicsCalculator(bowler_profile.dominant_arm)
-        biomechanics = bio_calculator.calculate_all(
+        biomechanics = await _run(
+            bio_calculator.calculate_all,
             smoothed_landmarks,
             phases,
             video_info["fps"],
             bowler_profile.height_cm,
         )
-
         job["progress"] = 75
 
-        # Step 5: Scoring
+        # ── Step 5: Scoring ───────────────────────────────────────────────
         job["current_step"] = "Scoring your action..."
         job["progress"] = 80
 
         form_scorer = FormScorer()
-        phase_scores = form_scorer.score_phases(biomechanics, phases)
-        overall_score = form_scorer.calculate_overall_score(phase_scores)
-        pace_leaks = form_scorer.identify_pace_leaks(biomechanics, phase_scores)
-        max_pace_potential = form_scorer.estimate_max_pace(biomechanics, bowler_profile)
+        phase_scores = await _run(form_scorer.score_phases, biomechanics, phases)
+        overall_score = await _run(form_scorer.calculate_overall_score, phase_scores)
+        pace_leaks = await _run(form_scorer.identify_pace_leaks, biomechanics, phase_scores)
+        max_pace_potential = await _run(form_scorer.estimate_max_pace, biomechanics, bowler_profile)
 
         injury_scorer = InjuryScorer()
-        injury_risk = injury_scorer.calculate_risk(biomechanics, bowler_profile)
+        injury_risk = await _run(injury_scorer.calculate_risk, biomechanics, bowler_profile)
 
         job["progress"] = 90
 
-        # Step 6: AI Report Generation
+        # ── Step 6: AI Report ─────────────────────────────────────────────
         job["current_step"] = "Generating AI report..."
-
         report_gen = ReportGenerator()
         ai_report = await report_gen.generate_report(
             bowler_profile=bowler_profile.model_dump(),
@@ -267,7 +289,6 @@ async def run_analysis_pipeline(
             max_pace_potential=max_pace_potential,
         )
 
-        # Compile full results
         result = {
             "overall_score": overall_score,
             "phase_scores": phase_scores,
@@ -284,7 +305,7 @@ async def run_analysis_pipeline(
         job["status"] = "complete"
         job["progress"] = 100
         job["current_step"] = "Analysis complete!"
-        job["result"] = result
+        job["result"] = convert_numpy(result)
 
     except Exception as e:
         job["status"] = "failed"
@@ -292,11 +313,9 @@ async def run_analysis_pipeline(
         job["current_step"] = f"Error: {str(e)}"
         print(f"Analysis pipeline error for job {job_id}: {e}")
         import traceback
-
         traceback.print_exc()
 
     finally:
-        # Clean up the uploaded video file
         try:
             if os.path.exists(video_path):
                 os.remove(video_path)

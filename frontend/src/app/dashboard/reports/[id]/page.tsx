@@ -156,9 +156,12 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
       // Live result from backend
       try {
         const result = await api.getAnalysisResult(id);
+        console.log('%c✅ LIVE AI DATA LOADED SUCCESSFULLY', 'color: #22c55e; font-weight: bold; font-size: 14px;');
+        console.log('Raw Payload from Backend:', result);
         setReport(transformLiveResult(result));
       } catch (err) {
-        console.error('Failed to fetch report, using mock:', err);
+        console.error('%c❌ BACKEND FETCH FAILED - USING MOCK DATA FALLBACK', 'color: #ef4444; font-weight: bold; font-size: 14px;');
+        console.error('Error Details:', err);
         setReport(mockReport);
       } finally {
         setLoading(false);
@@ -412,7 +415,9 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
               <div className="drill-rec-info">
                 <h4>{drill.name}</h4>
                 <p>{drill.purpose}</p>
-                <span className="badge-blue" style={{ fontSize: '0.6875rem' }}>{drill.category}</span>
+                <span className="badge-blue" style={{ fontSize: '0.6875rem' }}>
+                  {drill.category ? drill.category.split('_').map((word: string) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ') : 'General'}
+                </span>
               </div>
               <div className="drill-rec-sets">{drill.sets}</div>
             </div>
