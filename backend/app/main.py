@@ -234,6 +234,31 @@ async def run_analysis_pipeline(
                 "Ensure the bowler is clearly visible and well-lit."
             )
 
+        # ── Step 2b: Action validation (Is this actually a bowler?) ────────
+        job["current_step"] = "Validating bowling action..."
+        await asyncio.sleep(0)
+        
+        is_bowling = False
+        bowl_wrist_name = "right_wrist" if bowler_profile.dominant_arm == "right" else "left_wrist"
+        
+        for frame in smoothed_landmarks:
+            if frame is not None and "landmarks" in frame:
+                lms = frame["landmarks"]
+                wrist = lms.get(bowl_wrist_name)
+                nose = lms.get("nose")
+                
+                # In MediaPipe, y=0 is top of image, y=1 is bottom
+                # If wrist y is less than nose y, arm is above head
+                if wrist and nose and wrist["y"] < nose["y"]:
+                    is_bowling = True
+                    break
+        
+        if not is_bowling:
+            raise ValueError(
+                "No bowling action detected. The bowling arm never went above the head. "
+                "Please upload a valid cricket fast bowling video."
+            )
+
         # ── Step 3: Phase detection ───────────────────────────────────────
         job["current_step"] = "Detecting bowling phases..."
         job["progress"] = 50
