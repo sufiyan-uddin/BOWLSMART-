@@ -4,6 +4,7 @@
 
 const API_BASE_URL = '/api/v1';
 
+
 export interface BowlerProfile {
   age: number;
   height_cm: number;
@@ -86,6 +87,38 @@ export const api = {
       const errorText = await res.text();
       throw new Error(`Failed to get results: ${errorText}`);
     }
+    return res.json();
+  },
+
+  /**
+   * Get the URL for the annotated skeleton-overlay video
+   */
+  getAnnotatedVideoUrl(jobId: string): string {
+    return `${API_BASE_URL}/analyze/${jobId}/video`;
+  },
+
+  /**
+   * Send a chat message to Coach BowlSmart about a specific phase
+   */
+  async chatWithCoach(jobId: string, phase: string, message: string): Promise<{ reply: string; phase: string }> {
+    const res = await fetch(`${API_BASE_URL}/analyze/${jobId}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, phase }),
+    });
+    if (!res.ok) {
+      const errorText = await res.text();
+      throw new Error(`Chat failed: ${errorText}`);
+    }
+    return res.json();
+  },
+
+  /**
+   * Get available phases for chat
+   */
+  async getChatPhases(jobId: string): Promise<{ phases: Array<{ id: string; name: string; focus_areas: string[] }> }> {
+    const res = await fetch(`${API_BASE_URL}/analyze/${jobId}/chat/phases`);
+    if (!res.ok) throw new Error('Failed to get chat phases');
     return res.json();
   }
 };

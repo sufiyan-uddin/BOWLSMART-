@@ -13,20 +13,24 @@ from app.config import settings
 class ReportGenerator:
     """Generates AI-powered bowling analysis reports using Gemini."""
 
-    SYSTEM_PROMPT = """You are Dr. BowlSmart, an elite cricket biomechanics analyst with 20+ years of 
-experience coaching fast bowlers at international level. You combine deep sports 
-science knowledge with the ability to explain complex concepts in plain English 
-that any bowler can understand.
+    SYSTEM_PROMPT = """You are Coach BowlSmart — a personalised expert fast bowling coach with 10+ years 
+of hands-on experience coaching bowlers at EVERY level, from under-12 beginners to 
+international professionals. You've worked with academy systems, county setups, and 
+IPL/BBL franchises. You know exactly what each level needs to hear.
 
-Your analysis style:
-- Be encouraging but honest
-- Use cricket-specific language naturally
-- Explain the WHY behind every observation
-- Connect biomechanics to real bowling outcomes (pace, accuracy, injury)
-- Reference elite bowler comparisons where helpful
-- Never use medical jargon without explanation
-- Always prioritize safety — flag dangerous mechanics clearly
-- Use analogies that make complex biomechanics easy to visualize
+Your coaching philosophy:
+- You adapt your language and expectations to the bowler's experience level:
+  • Beginners: simple, encouraging, focus on 1-2 things max, use everyday analogies
+  • Club level: more technical detail, compare to achievable benchmarks, build confidence
+  • Academy: push them harder, reference elite standards, expect discipline
+  • Professional: brutally precise, marginal gains focus, data-driven
+- You are their PERSONAL coach — speak directly to them ("your front knee...", "you need to...")
+- Always explain WHY something matters for their pace/accuracy/longevity
+- Give drills they can actually do at home or at nets, not lab exercises
+- Be honest about weaknesses but ALWAYS frame it as opportunity ("this is costing you 8 km/h — fix it and you're bowling 135+")
+- Reference real bowlers they'd know (Bumrah's braced front leg, Starc's hip drive, Archer's smooth action)
+- Prioritise safety — if something risks injury, say it clearly and urgently
+- Make them feel like they have a world-class coach in their pocket
 """
 
     async def generate_report(
@@ -71,79 +75,105 @@ Your analysis style:
         import google.generativeai as genai
 
         genai.configure(api_key=settings.GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-1.5-pro")
+        model = genai.GenerativeModel("gemini-2.0-flash")
 
-        user_prompt = f"""Analyze this fast bowler's action based on the following biomechanical data.
+        user_prompt = f"""You are the SOLE JUDGE of this bowler's action. Based on the raw biomechanical measurements below, YOU must determine all scores, risk levels, drill recommendations, and coaching feedback. Do NOT just echo the data — interpret it like an elite biomechanics coach would.
 
 BOWLER PROFILE:
-{json.dumps(bowler_profile, indent=2)}
+- Age: {bowler_profile.get('age', 'unknown')}
+- Height: {bowler_profile.get('height_cm', 'unknown')} cm
+- Weight: {bowler_profile.get('weight_kg', 'unknown')} kg
+- Dominant Arm: {bowler_profile.get('dominant_arm', 'right')}
+- Bowling Style: {bowler_profile.get('bowling_style', 'seam')}
+- Experience Level: {bowler_profile.get('experience_level', 'club')}
+- Self-Reported Pace: {bowler_profile.get('self_reported_pace', 'not provided')} km/h
 
-OVERALL FORM SCORE: {overall_score}/100
-
-PHASE SCORES:
-{json.dumps(phase_scores, indent=2)}
-
-BIOMECHANICAL ANALYSIS DATA:
+RAW BIOMECHANICAL MEASUREMENTS (from MediaPipe pose analysis):
 {json.dumps(biomechanics, indent=2, default=str)}
 
-INJURY RISK DATA:
-{json.dumps(injury_risk, indent=2)}
+DETECTED BOWLING PHASES (frame boundaries):
+{json.dumps({{k: {{'start_frame': v.get('start_frame'), 'end_frame': v.get('end_frame')}} for k, v in (phase_scores if isinstance(phase_scores, dict) else {{}}).items()}}, indent=2, default=str)}
 
-IDENTIFIED PACE LEAKS:
-{json.dumps(pace_leaks, indent=2)}
+YOUR TASK — Judge this bowler's action and produce a COMPLETE analysis. You decide:
+1. Overall form score (0-100) based on how the biomechanics compare to elite fast bowling standards
+2. Individual phase scores (1-10 each) with reasoning
+3. Injury risk assessment per body area (0-100 per area)
+4. Pace leaks — where they're losing speed and by how much (estimate km/h lost)
+5. Max pace potential estimate given their body and current mechanics
+6. Specific drill recommendations tailored to their weaknesses
+7. Coaching cues for immediate improvement
 
-ESTIMATED MAX PACE POTENTIAL: {max_pace_potential} km/h
+Consider these elite benchmarks when judging:
+- Bowling arm elbow extension at delivery: <15° (legal), 15-20° (borderline), >20° (illegal/chucking)
+- Front knee angle at FFC: 160-180° (braced, ideal for pace), <140° (collapsing, pace leak)
+- Lateral trunk flexion: 30-40° (optimal for pace), >50° (injury risk to lower back)
+- Hip-shoulder separation at BFC: 30-50° (good counter-rotation)
+- Stride length: 75-85% of height (optimal)
 
-Generate a complete bowling analysis report. Return your response as JSON with these exact keys:
+Return your response as JSON with these EXACT keys:
 
 {{
-  "executive_summary": "2-3 sentence overall impression",
-  "phase_analysis": [
-    {{
-      "phase_name": "Run-Up",
-      "score": 8,
-      "whats_working": "description",
-      "needs_improvement": "description", 
-      "coaching_cue": "one memorable sentence"
+  "overall_score": <int 0-100>,
+  "executive_summary": "2-3 sentence expert opinion of this action",
+  "phase_scores": {{
+    "run_up": {{"score": <int 1-10>, "status": "green|amber|red", "key_metric": "brief finding"}},
+    "bound": {{"score": <int 1-10>, "status": "green|amber|red", "key_metric": "brief finding"}},
+    "back_foot_contact": {{"score": <int 1-10>, "status": "green|amber|red", "key_metric": "brief finding"}},
+    "front_foot_contact": {{"score": <int 1-10>, "status": "green|amber|red", "key_metric": "brief finding"}},
+    "delivery": {{"score": <int 1-10>, "status": "green|amber|red", "key_metric": "brief finding"}},
+    "follow_through": {{"score": <int 1-10>, "status": "green|amber|red", "key_metric": "brief finding"}}
+  }},
+  "injury_risk": {{
+    "overall_risk": <int 0-100>,
+    "risk_level": "Low|Moderate|High|Critical",
+    "body_areas": {{
+      "lower_back": {{"risk": <int 0-100>, "level": "Low|Moderate|High"}},
+      "front_knee": {{"risk": <int 0-100>, "level": "Low|Moderate|High"}},
+      "bowling_shoulder": {{"risk": <int 0-100>, "level": "Low|Moderate|High"}},
+      "ankle": {{"risk": <int 0-100>, "level": "Low|Moderate|High"}},
+      "elbow": {{"risk": <int 0-100>, "level": "Low|Moderate|High"}}
+    }},
+    "explanations": {{
+      "lower_back": "why this risk level",
+      "front_knee": "why this risk level",
+      "bowling_shoulder": "why this risk level"
     }}
-  ],
-  "pace_leak_insights": [
+  }},
+  "pace_leaks": [
     {{
       "rank": 1,
-      "issue": "name",
-      "biomechanical_explanation": "what's happening",
-      "pace_cost_kmh": "X-Y",
-      "fix_instruction": "actionable instruction",
-      "elite_comparison": "optional pro bowler comparison"
+      "issue": "specific issue name",
+      "description": "biomechanical explanation",
+      "pace_impact_kmh": <float estimated km/h lost>,
+      "fix": "how to fix it"
     }}
   ],
-  "injury_risk_summary": {{
-    "overall_assessment": "paragraph explaining risk profile",
-    "critical_areas": [
-      {{
-        "body_area": "Lower Back",
-        "risk_score": 42,
-        "plain_english_explanation": "explanation",
-        "prevention_action": "what to do"
-      }}
-    ]
-  }},
-  "action_plan": [
+  "max_pace_potential": <float km/h>,
+  "phase_analysis": [
     {{
-      "priority": 1,
-      "what_to_do": "specific action",
-      "why_it_matters": "impact",
-      "expected_timeline": "timeline"
+      "phase_name": "Phase Name",
+      "score": <int 1-10>,
+      "whats_working": "description",
+      "needs_improvement": "description",
+      "coaching_cue": "one memorable cue"
     }}
   ],
   "recommended_drills": [
     {{
       "name": "drill name",
-      "purpose": "what it fixes",
+      "purpose": "what it fixes based on THIS bowler's issues",
       "target_area": "area",
-      "sets_reps": "3 x 10 reps",
+      "sets_reps": "sets x reps",
       "coaching_cues": ["cue 1", "cue 2"],
-      "category": "pace / body_mechanics / strength / recovery"
+      "category": "pace|body_mechanics|strength|recovery"
+    }}
+  ],
+  "action_plan": [
+    {{
+      "priority": 1,
+      "what_to_do": "specific action",
+      "why_it_matters": "impact on performance",
+      "expected_timeline": "e.g. 2-4 weeks"
     }}
   ],
   "motivational_note": "encouraging paragraph"

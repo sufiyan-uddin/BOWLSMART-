@@ -1,11 +1,12 @@
 'use client';
 
-import { useState, useEffect, use } from 'react';
+import { useState, useEffect, useRef, use } from 'react';
 import { 
   ArrowLeft, Download, Share2, AlertTriangle, ArrowRight,
   TrendingUp, Shield, Zap, Target, Activity,
   ChevronRight, Brain, CheckCircle2, Clock,
-  FileText, ExternalLink, Loader2
+  FileText, ExternalLink, Loader2, Play, Pause, SkipForward,
+  MessageCircle, Send, X
 } from 'lucide-react';
 import Link from 'next/link';
 import { api } from '@/lib/api';
@@ -89,6 +90,7 @@ function transformLiveResult(result: any) {
   const bio = result.biomechanics || {};
   const aiReport = result.ai_report || {};
   const bp = result.bowler_profile || {};
+  const phaseTimestamps = result.phase_timestamps || {};
 
   const phaseNameMap: Record<string, string> = {
     run_up: 'Run-Up', bound: 'Bound', back_foot_contact: 'Back-Foot Contact',
@@ -137,6 +139,7 @@ function transformLiveResult(result: any) {
       name: d.name, purpose: d.purpose, category: d.category || d.target_area, sets: d.sets_reps,
     })),
     aiReport,
+    phaseTimestamps,
   };
 }
 
@@ -144,6 +147,48 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
   const { id } = use(params);
   const [report, setReport] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [activePhase, setActivePhase] = useState<string | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  // Coach Chat state
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatPhase, setChatPhase] = useState('run_up');
+  const [chatMessages, setChatMessages] = useState<Array<{role: string; content: string}>>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  const CHAT_PHASES = [
+    { id: 'run_up', name: 'Run-Up' },
+    { id: 'bound', name: 'Bound / Jump' },
+    { id: 'back_foot_contact', name: 'Back-Foot Contact' },
+    { id: 'front_foot_contact', name: 'Front-Foot Contact' },
+    { id: 'delivery', name: 'Delivery Stride' },
+    { id: 'follow_through', name: 'Follow-Through' },
+    { id: 'bowling_arm', name: 'Bowling Arm' },
+    { id: 'non_bowling_arm', name: 'Non-Bowling Arm' },
+  ];
+
+  const sendChatMessage = async () => {
+    if (!chatInput.trim() || chatLoading) return;
+    const msg = chatInput.trim();
+    setChatInput('');
+    setChatMessages(prev => [...prev, { role: 'user', content: msg }]);
+    setChatLoading(true);
+    try {
+      const res = await api.chatWithCoach(id, chatPhase, msg);
+      setChatMessages(prev => [...prev, { role: 'coach', content: res.reply }]);
+    } catch (err: any) {
+      setChatMessages(prev => [...prev, { role: 'coach', content: 'Sorry, I couldn\'t respond right now. Please try again in a moment.' }]);
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages]);
 
   useEffect(() => {
     async function load() {
@@ -153,16 +198,30 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
         setLoading(false);
         return;
       }
-      // Live result from backend
+      // Live result from backend — try API first, then localStorage cache
       try {
         const result = await api.getAnalysisResult(id);
         console.log('%c✅ LIVE AI DATA LOADED SUCCESSFULLY', 'color: #22c55e; font-weight: bold; font-size: 14px;');
         console.log('Raw Payload from Backend:', result);
+        // Cache result so it survives backend restarts
+        try { localStorage.setItem(`bowlsmart_report_${id}`, JSON.stringify(result)); } catch {}
         setReport(transformLiveResult(result));
       } catch (err) {
-        console.error('%c❌ BACKEND FETCH FAILED - USING MOCK DATA FALLBACK', 'color: #ef4444; font-weight: bold; font-size: 14px;');
-        console.error('Error Details:', err);
-        setReport(mockReport);
+        console.warn('Backend fetch failed, checking local cache...');
+        // Try to load from localStorage cache
+        try {
+          const cached = localStorage.getItem(`bowlsmart_report_${id}`);
+          if (cached) {
+            const result = JSON.parse(cached);
+            console.log('%c📦 LOADED FROM LOCAL CACHE', 'color: #f59e0b; font-weight: bold; font-size: 14px;');
+            setReport(transformLiveResult(result));
+          } else {
+            console.error('%c❌ NO CACHED DATA AVAILABLE', 'color: #ef4444; font-weight: bold;');
+            setReport(null);
+          }
+        } catch {
+          setReport(null);
+        }
       } finally {
         setLoading(false);
       }
@@ -220,6 +279,69 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
           </div>
         </div>
       </div>
+
+      {/* Annotated Video Player */}
+      {!['1', '2', '3'].includes(id) && (
+        <div className="glass-card-static report-section animate-fade-in-up delay-100">
+          <div className="section-label">
+            <Activity size={18} style={{ color: '#a78bfa' }} />
+            <h2>Skeleton Analysis Video</h2>
+          </div>
+
+          <div className="video-player-container">
+            <video
+              ref={videoRef}
+              src={api.getAnnotatedVideoUrl(id)}
+              className="annotated-video"
+              onPlay={() => setIsPlaying(true)}
+              onPause={() => setIsPlaying(false)}
+              onEnded={() => setIsPlaying(false)}
+              controls
+              playsInline
+            />
+          </div>
+
+          {/* Phase Navigation */}
+          {report.phaseTimestamps && Object.keys(report.phaseTimestamps).length > 0 && (
+            <div className="phase-nav">
+              <p className="phase-nav-label">Jump to Phase:</p>
+              <div className="phase-nav-buttons">
+                {Object.entries(report.phaseTimestamps).map(([key, ts]: [string, any]) => (
+                  <button
+                    key={key}
+                    className={`phase-nav-btn ${activePhase === key ? 'active' : ''}`}
+                    onClick={() => {
+                      if (videoRef.current) {
+                        videoRef.current.currentTime = ts.time_sec;
+                        videoRef.current.pause();
+                        setActivePhase(key);
+                      }
+                    }}
+                  >
+                    <span className="phase-btn-name">{ts.display_name}</span>
+                    <span className="phase-btn-time">{ts.time_sec.toFixed(1)}s</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Angle details for active phase */}
+              {activePhase && report.phaseTimestamps[activePhase]?.angles && (
+                <div className="phase-angles">
+                  <h4>{report.phaseTimestamps[activePhase].display_name} — Measurements</h4>
+                  <div className="angle-chips">
+                    {Object.entries(report.phaseTimestamps[activePhase].angles).map(([name, val]: [string, any]) => (
+                      <div key={name} className="angle-chip">
+                        <span className="angle-name">{name}</span>
+                        <span className="angle-value">{val}°</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Top Score Cards */}
       <div className="score-cards animate-fade-in-up delay-100">
@@ -445,6 +567,100 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
         <span>⚠️ This is AI-generated analysis. Consult a qualified cricket coach or physiotherapist for medical decisions.</span>
       </div>
 
+      {/* Coach Chat Floating Widget */}
+      {!['1', '2', '3'].includes(id) && (
+        <>
+          {/* Chat Toggle Button */}
+          {!chatOpen && (
+            <button className="chat-fab" onClick={() => setChatOpen(true)}>
+              <MessageCircle size={24} />
+              <span>Ask Coach</span>
+            </button>
+          )}
+
+          {/* Chat Panel */}
+          {chatOpen && (
+            <div className="chat-panel">
+              <div className="chat-header">
+                <div className="chat-header-title">
+                  <Brain size={18} />
+                  <span>Coach BowlSmart</span>
+                </div>
+                <button className="chat-close" onClick={() => setChatOpen(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Phase Selector */}
+              <div className="chat-phase-selector">
+                <select
+                  value={chatPhase}
+                  onChange={(e) => {
+                    setChatPhase(e.target.value);
+                    setChatMessages([]);
+                  }}
+                  className="chat-phase-dropdown"
+                >
+                  {CHAT_PHASES.map(p => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Messages */}
+              <div className="chat-messages">
+                {chatMessages.length === 0 && (
+                  <div className="chat-empty">
+                    <Brain size={32} style={{ opacity: 0.3 }} />
+                    <p>Ask me anything about your <strong>{CHAT_PHASES.find(p => p.id === chatPhase)?.name}</strong> phase!</p>
+                    <div className="chat-suggestions">
+                      <button onClick={() => { setChatInput('What am I doing wrong?'); }}>What am I doing wrong?</button>
+                      <button onClick={() => { setChatInput('Give me drills to improve'); }}>Give me drills</button>
+                      <button onClick={() => { setChatInput('Compare me to elite bowlers'); }}>Compare to elites</button>
+                    </div>
+                  </div>
+                )}
+                {chatMessages.map((msg, i) => (
+                  <div key={i} className={`chat-msg ${msg.role}`}>
+                    <div className="chat-msg-bubble">
+                      {msg.content}
+                    </div>
+                  </div>
+                ))}
+                {chatLoading && (
+                  <div className="chat-msg coach">
+                    <div className="chat-msg-bubble chat-typing">
+                      <span></span><span></span><span></span>
+                    </div>
+                  </div>
+                )}
+                <div ref={chatEndRef} />
+              </div>
+
+              {/* Input */}
+              <div className="chat-input-area">
+                <input
+                  type="text"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && sendChatMessage()}
+                  placeholder="Ask about this phase..."
+                  className="chat-input"
+                  disabled={chatLoading}
+                />
+                <button
+                  className="chat-send"
+                  onClick={sendChatMessage}
+                  disabled={chatLoading || !chatInput.trim()}
+                >
+                  <Send size={16} />
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
       <style jsx>{`
         .report-page {
           max-width: 900px;
@@ -482,6 +698,101 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
         .report-actions {
           display: flex;
           gap: 0.5rem;
+        }
+
+        /* Annotated Video */
+        .video-player-container {
+          position: relative;
+          border-radius: var(--radius-lg);
+          overflow: hidden;
+          background: #000;
+          margin-bottom: 1rem;
+        }
+        .annotated-video {
+          width: 100%;
+          max-height: 500px;
+          object-fit: contain;
+          display: block;
+        }
+        .phase-nav {
+          margin-top: 0.75rem;
+        }
+        .phase-nav-label {
+          font-size: 0.75rem;
+          color: var(--color-text-muted);
+          font-weight: 500;
+          margin-bottom: 0.5rem;
+        }
+        .phase-nav-buttons {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.5rem;
+        }
+        .phase-nav-btn {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 0.125rem;
+          padding: 0.5rem 0.75rem;
+          background: rgba(255,255,255,0.03);
+          border: 1px solid rgba(255,255,255,0.08);
+          border-radius: 8px;
+          cursor: pointer;
+          transition: all 0.2s;
+          color: var(--color-text-secondary);
+        }
+        .phase-nav-btn:hover {
+          background: rgba(255,255,255,0.06);
+          border-color: var(--color-brand-400);
+        }
+        .phase-nav-btn.active {
+          background: rgba(43,141,255,0.1);
+          border-color: var(--color-brand-400);
+          color: var(--color-brand-400);
+        }
+        .phase-btn-name {
+          font-size: 0.75rem;
+          font-weight: 600;
+        }
+        .phase-btn-time {
+          font-size: 0.625rem;
+          opacity: 0.6;
+        }
+        .phase-angles {
+          margin-top: 1rem;
+          padding: 1rem;
+          background: rgba(167,139,250,0.05);
+          border: 1px solid rgba(167,139,250,0.12);
+          border-radius: 8px;
+        }
+        .phase-angles h4 {
+          font-size: 0.8125rem;
+          font-weight: 600;
+          color: #a78bfa;
+          margin-bottom: 0.75rem;
+        }
+        .angle-chips {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.5rem;
+        }
+        .angle-chip {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+          padding: 0.375rem 0.75rem;
+          background: rgba(255,255,255,0.04);
+          border-radius: 6px;
+          border: 1px solid rgba(255,255,255,0.06);
+        }
+        .angle-name {
+          font-size: 0.75rem;
+          color: var(--color-text-muted);
+        }
+        .angle-value {
+          font-size: 0.875rem;
+          font-weight: 700;
+          color: #fbbf24;
         }
 
         /* Score Cards */
@@ -758,12 +1069,226 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
           margin-bottom: 2rem;
         }
 
+        /* Coach Chat */
+        .chat-fab {
+          position: fixed;
+          bottom: 2rem;
+          right: 2rem;
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+          padding: 0.875rem 1.25rem;
+          background: linear-gradient(135deg, #6366f1, #8b5cf6);
+          color: white;
+          border: none;
+          border-radius: 50px;
+          cursor: pointer;
+          font-size: 0.875rem;
+          font-weight: 600;
+          box-shadow: 0 8px 32px rgba(99,102,241,0.4);
+          transition: all 0.2s;
+          z-index: 1000;
+        }
+        .chat-fab:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 12px 40px rgba(99,102,241,0.5);
+        }
+        .chat-panel {
+          position: fixed;
+          bottom: 2rem;
+          right: 2rem;
+          width: 380px;
+          height: 520px;
+          background: #1a1a2e;
+          border: 1px solid rgba(255,255,255,0.1);
+          border-radius: 16px;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+          box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+          z-index: 1000;
+        }
+        .chat-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 0.875rem 1rem;
+          background: rgba(99,102,241,0.1);
+          border-bottom: 1px solid rgba(255,255,255,0.06);
+        }
+        .chat-header-title {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+          font-weight: 600;
+          font-size: 0.875rem;
+          color: #a78bfa;
+        }
+        .chat-close {
+          background: none;
+          border: none;
+          color: var(--color-text-muted);
+          cursor: pointer;
+          padding: 0.25rem;
+          border-radius: 4px;
+          transition: color 0.2s;
+        }
+        .chat-close:hover { color: white; }
+        .chat-phase-selector {
+          padding: 0.5rem 0.75rem;
+          border-bottom: 1px solid rgba(255,255,255,0.06);
+        }
+        .chat-phase-dropdown {
+          width: 100%;
+          padding: 0.5rem 0.75rem;
+          background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(255,255,255,0.1);
+          border-radius: 8px;
+          color: white;
+          font-size: 0.8125rem;
+          cursor: pointer;
+          outline: none;
+        }
+        .chat-phase-dropdown:focus {
+          border-color: #6366f1;
+        }
+        .chat-messages {
+          flex: 1;
+          overflow-y: auto;
+          padding: 1rem;
+          display: flex;
+          flex-direction: column;
+          gap: 0.75rem;
+        }
+        .chat-empty {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          height: 100%;
+          gap: 0.75rem;
+          text-align: center;
+          color: var(--color-text-muted);
+        }
+        .chat-empty p {
+          font-size: 0.8125rem;
+        }
+        .chat-suggestions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.375rem;
+          justify-content: center;
+          margin-top: 0.5rem;
+        }
+        .chat-suggestions button {
+          padding: 0.375rem 0.75rem;
+          background: rgba(99,102,241,0.1);
+          border: 1px solid rgba(99,102,241,0.2);
+          border-radius: 20px;
+          color: #a78bfa;
+          font-size: 0.6875rem;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+        .chat-suggestions button:hover {
+          background: rgba(99,102,241,0.2);
+        }
+        .chat-msg {
+          display: flex;
+        }
+        .chat-msg.user {
+          justify-content: flex-end;
+        }
+        .chat-msg.coach {
+          justify-content: flex-start;
+        }
+        .chat-msg-bubble {
+          max-width: 85%;
+          padding: 0.625rem 0.875rem;
+          border-radius: 12px;
+          font-size: 0.8125rem;
+          line-height: 1.5;
+          white-space: pre-wrap;
+        }
+        .chat-msg.user .chat-msg-bubble {
+          background: linear-gradient(135deg, #6366f1, #8b5cf6);
+          color: white;
+          border-bottom-right-radius: 4px;
+        }
+        .chat-msg.coach .chat-msg-bubble {
+          background: rgba(255,255,255,0.06);
+          color: var(--color-text-secondary);
+          border: 1px solid rgba(255,255,255,0.06);
+          border-bottom-left-radius: 4px;
+        }
+        .chat-typing span {
+          display: inline-block;
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: #6366f1;
+          margin: 0 2px;
+          animation: chatBounce 1.4s infinite ease-in-out both;
+        }
+        .chat-typing span:nth-child(1) { animation-delay: -0.32s; }
+        .chat-typing span:nth-child(2) { animation-delay: -0.16s; }
+        @keyframes chatBounce {
+          0%, 80%, 100% { transform: scale(0); }
+          40% { transform: scale(1); }
+        }
+        .chat-input-area {
+          display: flex;
+          gap: 0.5rem;
+          padding: 0.75rem;
+          border-top: 1px solid rgba(255,255,255,0.06);
+          background: rgba(0,0,0,0.2);
+        }
+        .chat-input {
+          flex: 1;
+          padding: 0.625rem 0.875rem;
+          background: rgba(255,255,255,0.05);
+          border: 1px solid rgba(255,255,255,0.1);
+          border-radius: 8px;
+          color: white;
+          font-size: 0.8125rem;
+          outline: none;
+        }
+        .chat-input:focus {
+          border-color: #6366f1;
+        }
+        .chat-input::placeholder {
+          color: rgba(255,255,255,0.3);
+        }
+        .chat-send {
+          padding: 0.625rem;
+          background: #6366f1;
+          border: none;
+          border-radius: 8px;
+          color: white;
+          cursor: pointer;
+          transition: background 0.2s;
+          display: flex;
+          align-items: center;
+        }
+        .chat-send:hover:not(:disabled) { background: #7c3aed; }
+        .chat-send:disabled { opacity: 0.4; cursor: not-allowed; }
+
         @media (max-width: 768px) {
           .score-cards { flex-direction: column; }
           .phase-details { grid-template-columns: 1fr; }
           .injury-reason { padding-left: 0; }
           .pace-leak-card { flex-direction: column; }
           .leak-rank { width: auto; }
+          .chat-panel {
+            width: calc(100vw - 2rem);
+            height: calc(100vh - 6rem);
+            bottom: 1rem;
+            right: 1rem;
+          }
+          .chat-fab {
+            bottom: 1rem;
+            right: 1rem;
+          }
         }
       `}</style>
     </div>

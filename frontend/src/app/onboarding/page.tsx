@@ -4,9 +4,12 @@ import { useState } from 'react';
 import { 
   ArrowRight, ArrowLeft, User, Ruler, Weight, 
   Target, Shield, Zap, ChevronRight, Check,
-  Activity, AlertTriangle
+  Activity, AlertTriangle, Mail, Lock
 } from 'lucide-react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { useAuth } from '@/lib/auth-context';
+import { db } from '@/lib/db';
 
 /* ═══════════════════════════════════════════════════
    ONBOARDING — Multi-Step Wizard
@@ -14,6 +17,8 @@ import Link from 'next/link';
 
 interface BowlerProfile {
   fullName: string;
+  email: string;
+  password: string;
   age: string;
   heightCm: string;
   weightKg: string;
@@ -28,6 +33,8 @@ interface BowlerProfile {
 
 const defaultProfile: BowlerProfile = {
   fullName: '',
+  email: '',
+  password: '',
   age: '',
   heightCm: '',
   weightKg: '',
@@ -41,8 +48,12 @@ const defaultProfile: BowlerProfile = {
 };
 
 export default function OnboardingPage() {
+  const router = useRouter();
+  const { signUp } = useAuth();
   const [step, setStep] = useState(0);
   const [profile, setProfile] = useState<BowlerProfile>(defaultProfile);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState('');
 
   const totalSteps = 4;
   const progress = ((step + 1) / totalSteps) * 100;
@@ -63,12 +74,49 @@ export default function OnboardingPage() {
 
   const canProceed = () => {
     switch (step) {
-      case 0: return profile.fullName && profile.age;
+      case 0: return profile.fullName && profile.email && profile.password && profile.password.length >= 6 && profile.age;
       case 1: return profile.dominantArm && profile.bowlingStyle && profile.experienceLevel;
       case 2: return true; // injuries optional
       case 3: return profile.goals.length > 0;
       default: return true;
     }
+  };
+
+  const handleFinish = async () => {
+    setIsSubmitting(true);
+    setError('');
+
+    // 1. Sign up with Supabase Auth
+    const { error: authError } = await signUp(profile.email, profile.password, profile.fullName);
+    if (authError) {
+      setError(authError.message);
+      setIsSubmitting(false);
+      return;
+    }
+
+    // 2. Profile is auto-created via DB trigger, but update with full details
+    // (small delay to let the trigger fire)
+    setTimeout(async () => {
+      try {
+        const { data: { user } } = await (await import('@/lib/supabase')).supabase.auth.getUser();
+        if (user) {
+          await db.upsertProfile(user.id, {
+            full_name: profile.fullName,
+            age: parseInt(profile.age) || 22,
+            height_cm: parseFloat(profile.heightCm) || 175,
+            weight_kg: parseFloat(profile.weightKg) || 72,
+            dominant_arm: profile.dominantArm as 'right' | 'left',
+            bowling_style: profile.bowlingStyle,
+            experience_level: profile.experienceLevel,
+            self_reported_pace: profile.selfReportedPace ? parseFloat(profile.selfReportedPace) : null,
+          });
+        }
+      } catch (e) {
+        // Non-critical — profile can be updated later
+        console.warn('Profile save deferred:', e);
+      }
+      router.push('/dashboard');
+    }, 1000);
   };
 
   return (
@@ -126,6 +174,11 @@ export default function OnboardingPage() {
             </button>
           )}
           <div style={{ flex: 1 }} />
+          {error && (
+            <div style={{ padding: '0.5rem 1rem', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, color: '#f87171', fontSize: '0.8125rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <AlertTriangle size={14} /> {error}
+            </div>
+          )}
           {step < totalSteps - 1 ? (
             <button 
               className="btn-primary" 
@@ -137,14 +190,15 @@ export default function OnboardingPage() {
               <ArrowRight size={16} />
             </button>
           ) : (
-            <Link 
-              href="/dashboard"
+            <button
               className="btn-accent"
-              style={{ opacity: canProceed() ? 1 : 0.5, pointerEvents: canProceed() ? 'auto' : 'none' }}
+              onClick={handleFinish}
+              disabled={!canProceed() || isSubmitting}
+              style={{ opacity: canProceed() ? 1 : 0.5 }}
             >
-              Launch Dashboard
+              {isSubmitting ? 'Creating Account...' : 'Launch Dashboard'}
               <Zap size={16} />
-            </Link>
+            </button>
           )}
         </div>
       </div>
@@ -295,8 +349,8 @@ export default function OnboardingPage() {
 function StepBasicInfo({ profile, updateProfile }: { profile: BowlerProfile; updateProfile: (f: string, v: string) => void }) {
   return (
     <div>
-      <h2 className="step-title">Tell us about yourself</h2>
-      <p className="step-subtitle">Let&apos;s set up your bowler profile to personalize your analysis.</p>
+      <h2 className="step-title">Create your account</h2>
+      <p className="step-subtitle">Set up your bowler profile and account to save your analyses.</p>
       
       <div className="form-group">
         <label className="input-label">Full Name</label>
@@ -306,6 +360,29 @@ function StepBasicInfo({ profile, updateProfile }: { profile: BowlerProfile; upd
           value={profile.fullName}
           onChange={e => updateProfile('fullName', e.target.value)}
         />
+      </div>
+
+      <div className="form-row">
+        <div className="form-group">
+          <label className="input-label">Email</label>
+          <input 
+            className="input-field" 
+            type="email"
+            placeholder="you@example.com"
+            value={profile.email}
+            onChange={e => updateProfile('email', e.target.value)}
+          />
+        </div>
+        <div className="form-group">
+          <label className="input-label">Password (6+ chars)</label>
+          <input 
+            className="input-field" 
+            type="password"
+            placeholder="••••••••"
+            value={profile.password}
+            onChange={e => updateProfile('password', e.target.value)}
+          />
+        </div>
       </div>
 
       <div className="form-row">

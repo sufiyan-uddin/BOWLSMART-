@@ -42,30 +42,40 @@ cd bowling-biomechanics
 ```
 
 ### 2. Set up the Backend (FastAPI)
+> **Important:** Use **Python 3.12** (MediaPipe does not support 3.14).
+
 1. Navigate to the backend directory:
    ```bash
    cd backend
    ```
-2. Create a Python virtual environment to isolate dependencies:
+2. Copy the environment template and fill in your keys (optional):
    ```bash
-   python -m venv venv
+   cp .env.example .env
    ```
-3. Activate the virtual environment:
+3. Create a Python virtual environment (**Python 3.12 required**):
+   ```bash
+   python -m venv .venv
+   ```
+4. Activate the virtual environment:
    - **Windows:**
      ```bash
-     venv\Scripts\activate
+     .venv\Scripts\activate
      ```
    - **Mac/Linux:**
      ```bash
-     source venv/bin/activate
+     source .venv/bin/activate
      ```
-4. Install all the necessary Python packages:
+5. Install all the necessary Python packages:
    ```bash
    pip install -r requirements.txt
    ```
-5. Start the backend server:
+6. Download the MediaPipe pose model (first time only):
    ```bash
-   uvicorn app.main:app --reload
+   python download_models.py
+   ```
+7. Start the backend server:
+   ```bash
+   python -m uvicorn app.main:app --reload
    ```
    *The backend should now run on `http://localhost:8000`*
 

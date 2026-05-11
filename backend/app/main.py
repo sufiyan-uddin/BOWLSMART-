@@ -29,6 +29,8 @@ from app.services.biomechanics import BiomechanicsCalculator
 from app.services.injury_scorer import InjuryScorer
 from app.services.form_scorer import FormScorer
 from app.services.report_generator import ReportGenerator
+from app.services.video_annotator import VideoAnnotator
+from app.services.coach_chat import CoachChat
 
 app = FastAPI(
     title="BowlSmart API",
@@ -49,11 +51,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Ensure uploads directory exists
+# Ensure uploads and annotated videos directories exist
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+ANNOTATED_DIR = os.path.join(os.path.dirname(settings.UPLOAD_DIR), "annotated_videos")
+os.makedirs(ANNOTATED_DIR, exist_ok=True)
 
 # In-memory job store (replace with Redis/DB in production)
 analysis_jobs: dict = {}
+
+# Coach chat instance (shared across requests)
+coach_chat = CoachChat()
 
 def convert_numpy(obj):
     if isinstance(obj, np.integer):
@@ -167,6 +174,24 @@ async def get_analysis_status(job_id: str):
     return AnalysisStatus(job_id=job_id, **job)
 
 
+@app.get("/api/v1/analyze/{job_id}/video")
+async def get_annotated_video(job_id: str):
+    """Serve the annotated skeleton-overlay video for a completed analysis."""
+    if job_id not in analysis_jobs:
+        raise HTTPException(status_code=404, detail="Analysis job not found")
+
+    job = analysis_jobs[job_id]
+    if job["status"] != "complete":
+        raise HTTPException(status_code=400, detail="Analysis not complete")
+
+    video_path = job.get("annotated_video_path")
+    if not video_path or not os.path.exists(video_path):
+        raise HTTPException(status_code=404, detail="Annotated video not available")
+
+    from fastapi.responses import FileResponse
+    return FileResponse(video_path, media_type="video/mp4", filename=f"bowlsmart_{job_id}.mp4")
+
+
 @app.get("/api/v1/analyze/{job_id}/result")
 async def get_analysis_result(job_id: str):
     """Get the full result of a completed analysis."""
@@ -183,6 +208,55 @@ async def get_analysis_result(job_id: str):
     return job["result"]
 
 
+class ChatRequest(BaseModel):
+    message: str
+    phase: str  # run_up, bound, back_foot_contact, front_foot_contact, delivery, follow_through, bowling_arm, non_bowling_arm
+
+
+@app.post("/api/v1/analyze/{job_id}/chat")
+async def chat_with_coach(job_id: str, req: ChatRequest):
+    """Chat with Coach BowlSmart about a specific phase of the bowling action."""
+    if job_id not in analysis_jobs:
+        raise HTTPException(status_code=404, detail="Analysis job not found")
+
+    job = analysis_jobs[job_id]
+    if job["status"] != "complete":
+        raise HTTPException(status_code=400, detail="Analysis not complete")
+
+    result = job["result"]
+    biomechanics = result.get("biomechanics", {})
+    bowler_profile = result.get("bowler_profile", {})
+    ai_report = result.get("ai_report", {})
+
+    reply = await coach_chat.chat(
+        job_id=job_id,
+        phase=req.phase,
+        user_message=req.message,
+        biomechanics=biomechanics,
+        bowler_profile=bowler_profile,
+        ai_report=ai_report,
+    )
+
+    return {"reply": reply, "phase": req.phase}
+
+
+@app.get("/api/v1/analyze/{job_id}/chat/phases")
+async def get_chat_phases(job_id: str):
+    """Get available phases for chat with their display names."""
+    if job_id not in analysis_jobs:
+        raise HTTPException(status_code=404, detail="Analysis job not found")
+
+    from app.services.coach_chat import PHASE_CONTEXT
+    phases = []
+    for key, info in PHASE_CONTEXT.items():
+        phases.append({
+            "id": key,
+            "name": info["display_name"],
+            "focus_areas": info["focus_areas"],
+        })
+    return {"phases": phases}
+
+
 async def run_analysis_pipeline(
     job_id: str, video_path: str, bowler_profile: BowlerProfile, camera_angle: str
 ):
@@ -192,7 +266,7 @@ async def run_analysis_pipeline(
     run_in_executor so the event loop stays free to serve status polls.
     """
     job = analysis_jobs[job_id]
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _run(fn, *args):
         """Helper: run a sync callable in the default thread pool."""
@@ -301,8 +375,8 @@ async def run_analysis_pipeline(
 
         job["progress"] = 90
 
-        # ── Step 6: AI Report ─────────────────────────────────────────────
-        job["current_step"] = "Generating AI report..."
+        # ── Step 6: AI Report (Gemini judges everything) ──────────────────
+        job["current_step"] = "AI is judging your action..."
         report_gen = ReportGenerator()
         ai_report = await report_gen.generate_report(
             bowler_profile=bowler_profile.model_dump(),
@@ -312,6 +386,30 @@ async def run_analysis_pipeline(
             injury_risk=injury_risk,
             pace_leaks=pace_leaks,
             max_pace_potential=max_pace_potential,
+        )
+
+        # If AI returned its own scores, use those instead of rule-based
+        if "overall_score" in ai_report:
+            overall_score = ai_report["overall_score"]
+        if "phase_scores" in ai_report:
+            phase_scores = ai_report["phase_scores"]
+        if "injury_risk" in ai_report:
+            injury_risk = ai_report["injury_risk"]
+        if "pace_leaks" in ai_report:
+            pace_leaks = ai_report["pace_leaks"]
+        if "max_pace_potential" in ai_report:
+            max_pace_potential = ai_report["max_pace_potential"]
+
+        # ── Step 7: Generate annotated video ─────────────────────────
+        job["current_step"] = "Generating annotated video..."
+        job["progress"] = 95
+
+        annotator = VideoAnnotator(bowler_profile.dominant_arm)
+        annotated_video_path = os.path.join(ANNOTATED_DIR, f"{job_id}.mp4")
+        annotation_result = await _run(
+            annotator.generate_annotated_video,
+            frames, smoothed_landmarks, phases,
+            annotated_video_path, 10.0,
         )
 
         result = {
@@ -325,12 +423,15 @@ async def run_analysis_pipeline(
             "video_info": video_info,
             "phases": phases,
             "bowler_profile": bowler_profile.model_dump(),
+            "phase_timestamps": annotation_result.get("phase_timestamps", {}),
+            "annotated_video_duration": annotation_result.get("duration_sec", 0),
         }
 
         job["status"] = "complete"
         job["progress"] = 100
         job["current_step"] = "Analysis complete!"
         job["result"] = convert_numpy(result)
+        job["annotated_video_path"] = annotated_video_path
 
     except Exception as e:
         job["status"] = "failed"

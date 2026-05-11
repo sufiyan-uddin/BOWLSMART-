@@ -5,6 +5,52 @@ Migrated from the legacy mp.solutions.pose API to the modern MediaPipe Tasks API
 """
 
 import os
+import ctypes
+import platform
+
+# ── Monkey-patch: mediapipe 0.10.x on Windows ships a DLL that does not
+#    export the C-runtime ``free()`` symbol.  We patch the loader *before*
+#    importing mediapipe so the fix survives ``pip install --upgrade``.
+if platform.system() == "Windows":
+    import importlib
+    _mc_bindings = importlib.import_module(
+        "mediapipe.tasks.python.core.mediapipe_c_bindings"
+    )
+
+    _orig_load_raw = _mc_bindings.load_raw_library
+
+    def _patched_load_raw(signatures=()):
+        try:
+            return _orig_load_raw(signatures)
+        except AttributeError as exc:
+            if "free" not in str(exc):
+                raise
+            # Load the lib without the free() call
+            if _mc_bindings._shared_lib is None:
+                from importlib import resources as _res
+                _lib_path = str(_res.files("mediapipe.tasks.c") / "libmediapipe.dll")
+                _mc_bindings._shared_lib = ctypes.CDLL(_lib_path)
+
+            for sig in signatures:
+                c_func = getattr(_mc_bindings._shared_lib, sig.func_name)
+                c_func.argtypes = sig.argtypes
+                c_func.restype = sig.restype
+
+            # Attach free() from the universal C runtime (ucrtbase / msvcrt)
+            for crt_name in ("ucrtbase", "msvcrt"):
+                try:
+                    crt = ctypes.CDLL(crt_name)
+                    _mc_bindings._shared_lib.free = crt.free
+                    _mc_bindings._shared_lib.free.argtypes = [ctypes.c_void_p]
+                    _mc_bindings._shared_lib.free.restype = None
+                    break
+                except OSError:
+                    continue
+
+            return _mc_bindings._shared_lib
+
+    _mc_bindings.load_raw_library = _patched_load_raw
+
 import numpy as np
 from scipy.signal import savgol_filter
 import mediapipe as mp
@@ -61,7 +107,10 @@ class PoseDetector:
 
     def _build_landmarker(self) -> mp_vision.PoseLandmarker:
         """Create a PoseLandmarker instance configured for video-mode inference."""
-        base_options = mp_python.BaseOptions(model_asset_path=_MODEL_PATH)
+        base_options = mp_python.BaseOptions(
+            model_asset_path=_MODEL_PATH,
+            delegate=mp_python.BaseOptions.Delegate.CPU,
+        )
         options = mp_vision.PoseLandmarkerOptions(
             base_options=base_options,
             running_mode=mp_vision.RunningMode.IMAGE,  # per-frame (stateless)
@@ -139,11 +188,13 @@ class PoseDetector:
         """
         Apply Savitzky-Golay smoothing filter to landmark positions.
         This reduces jitter in MediaPipe tracking without losing important movements.
+        Smooths both named landmarks and raw_landmarks for video annotation.
         """
         valid_indices = [i for i, lm in enumerate(landmarks_sequence) if lm is not None]
         if len(valid_indices) < window_length:
             return landmarks_sequence  # Not enough data to smooth
 
+        # ── Smooth named landmarks ──
         landmark_names = list(self.LANDMARKS.keys())
 
         for name in landmark_names:
@@ -166,5 +217,28 @@ class PoseDetector:
                     if landmarks_sequence[idx] and name in landmarks_sequence[idx]["landmarks"]:
                         landmarks_sequence[idx]["landmarks"][name]["x"] = float(smooth_x[i])
                         landmarks_sequence[idx]["landmarks"][name]["y"] = float(smooth_y[i])
+
+        # ── Smooth raw_landmarks (all 33 points) for video annotation ──
+        num_landmarks = 33
+        for lm_idx in range(num_landmarks):
+            xs, ys = [], []
+            for idx in valid_indices:
+                raw = landmarks_sequence[idx].get("raw_landmarks", [])
+                if lm_idx < len(raw):
+                    xs.append(raw[lm_idx]["x"])
+                    ys.append(raw[lm_idx]["y"])
+                else:
+                    xs.append(0.0)
+                    ys.append(0.0)
+
+            if len(xs) >= window_length:
+                smooth_x = savgol_filter(xs, window_length, polyorder)
+                smooth_y = savgol_filter(ys, window_length, polyorder)
+
+                for i, idx in enumerate(valid_indices):
+                    raw = landmarks_sequence[idx].get("raw_landmarks", [])
+                    if lm_idx < len(raw):
+                        raw[lm_idx]["x"] = float(smooth_x[i])
+                        raw[lm_idx]["y"] = float(smooth_y[i])
 
         return landmarks_sequence

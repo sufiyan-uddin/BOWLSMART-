@@ -15,6 +15,9 @@ import { api, BowlerProfile } from '@/lib/api';
 
 type AnalysisState = 'guide' | 'upload' | 'processing' | 'complete';
 
+const MAX_FILE_SIZE_MB = 100;
+const ALLOWED_VIDEO_TYPES = ['video/mp4', 'video/quicktime', 'video/webm', 'video/x-msvideo', 'video/x-matroska'];
+
 export default function AnalyzePage() {
   const [state, setState] = useState<AnalysisState>('guide');
   const [dragOver, setDragOver] = useState(false);
@@ -26,12 +29,31 @@ export default function AnalyzePage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Bowler profile state
+  const [profile, setProfile] = useState<BowlerProfile>({
+    age: 22,
+    height_cm: 175,
+    weight_kg: 72,
+    dominant_arm: 'right',
+    bowling_style: 'seam',
+    experience_level: 'club',
+    camera_angle: 'side_on',
+  });
+
   const handleFileSelect = useCallback((file: File) => {
-    if (file.type.startsWith('video/')) {
-      setVideoFile(file);
-      setVideoPreview(URL.createObjectURL(file));
-      setState('upload');
+    setErrorMsg(null);
+    if (!file.type.startsWith('video/') && !ALLOWED_VIDEO_TYPES.includes(file.type)) {
+      setErrorMsg('Please upload a video file (MP4, MOV, or WebM).');
+      return;
     }
+    const sizeMB = file.size / (1024 * 1024);
+    if (sizeMB > MAX_FILE_SIZE_MB) {
+      setErrorMsg(`File too large (${sizeMB.toFixed(1)} MB). Maximum is ${MAX_FILE_SIZE_MB} MB.`);
+      return;
+    }
+    setVideoFile(file);
+    setVideoPreview(URL.createObjectURL(file));
+    setState('upload');
   }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -49,17 +71,6 @@ export default function AnalyzePage() {
     setProgress(5);
 
     try {
-      // Mock profile for now, should ideally collect from user form
-      const profile: BowlerProfile = {
-        age: 22,
-        height_cm: 180,
-        weight_kg: 75,
-        dominant_arm: 'right',
-        bowling_style: 'seam',
-        experience_level: 'club',
-        camera_angle: 'side_on'
-      };
-
       const response = await api.startAnalysis(videoFile, profile);
       setJobId(response.job_id);
       
@@ -175,13 +186,73 @@ export default function AnalyzePage() {
                       <RefreshCw size={14} />
                       Change
                     </button>
-                    <button className="btn-accent" onClick={startAnalysis}>
-                      <Zap size={16} />
-                      Start Analysis
-                    </button>
                   </div>
                 </div>
               </div>
+
+              {/* ── Bowler Profile Form ── */}
+              <div className="profile-form" style={{ marginTop: '1.5rem', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '1.5rem' }}>
+                <h3 style={{ fontWeight: 700, marginBottom: '1rem', fontSize: '1rem' }}>Your Details</h3>
+                <div className="profile-grid">
+                  <label className="form-field">
+                    <span>Age</span>
+                    <input type="number" min={10} max={60} value={profile.age}
+                      onChange={(e) => setProfile({ ...profile, age: Number(e.target.value) })} />
+                  </label>
+                  <label className="form-field">
+                    <span>Height (cm)</span>
+                    <input type="number" min={100} max={220} value={profile.height_cm}
+                      onChange={(e) => setProfile({ ...profile, height_cm: Number(e.target.value) })} />
+                  </label>
+                  <label className="form-field">
+                    <span>Weight (kg)</span>
+                    <input type="number" min={30} max={150} value={profile.weight_kg}
+                      onChange={(e) => setProfile({ ...profile, weight_kg: Number(e.target.value) })} />
+                  </label>
+                  <label className="form-field">
+                    <span>Dominant Arm</span>
+                    <select value={profile.dominant_arm}
+                      onChange={(e) => setProfile({ ...profile, dominant_arm: e.target.value as 'right' | 'left' })}>
+                      <option value="right">Right</option>
+                      <option value="left">Left</option>
+                    </select>
+                  </label>
+                  <label className="form-field">
+                    <span>Bowling Style</span>
+                    <select value={profile.bowling_style}
+                      onChange={(e) => setProfile({ ...profile, bowling_style: e.target.value as BowlerProfile['bowling_style'] })}>
+                      <option value="seam">Seam</option>
+                      <option value="swing">Swing</option>
+                      <option value="express_pace">Express Pace</option>
+                      <option value="spin">Spin</option>
+                    </select>
+                  </label>
+                  <label className="form-field">
+                    <span>Experience</span>
+                    <select value={profile.experience_level}
+                      onChange={(e) => setProfile({ ...profile, experience_level: e.target.value as BowlerProfile['experience_level'] })}>
+                      <option value="beginner">Beginner</option>
+                      <option value="club">Club</option>
+                      <option value="academy">Academy</option>
+                      <option value="professional">Professional</option>
+                    </select>
+                  </label>
+                  <label className="form-field">
+                    <span>Camera Angle</span>
+                    <select value={profile.camera_angle}
+                      onChange={(e) => setProfile({ ...profile, camera_angle: e.target.value as BowlerProfile['camera_angle'] })}>
+                      <option value="side_on">Side-On</option>
+                      <option value="front_on">Front-On</option>
+                      <option value="behind">Behind</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+
+              <button className="btn-accent" style={{ marginTop: '1.5rem', width: '100%' }} onClick={startAnalysis}>
+                <Zap size={16} />
+                Start Analysis
+              </button>
             </div>
           )}
 
@@ -336,6 +407,42 @@ export default function AnalyzePage() {
           gap: 0.75rem;
         }
 
+        /* Profile Form */
+        .profile-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+          gap: 0.75rem;
+        }
+        .form-field {
+          display: flex;
+          flex-direction: column;
+          gap: 0.25rem;
+        }
+        .form-field span {
+          font-size: 0.75rem;
+          color: var(--color-text-muted);
+          font-weight: 500;
+        }
+        .form-field input,
+        .form-field select {
+          background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(255,255,255,0.08);
+          border-radius: 6px;
+          padding: 0.5rem 0.625rem;
+          color: var(--color-text-primary);
+          font-size: 0.875rem;
+          outline: none;
+          transition: border-color 0.2s;
+        }
+        .form-field input:focus,
+        .form-field select:focus {
+          border-color: var(--color-brand-400);
+        }
+        .form-field select option {
+          background: var(--color-surface-800);
+          color: var(--color-text-primary);
+        }
+
         /* Processing */
         .processing-animation {
           display: flex;
@@ -362,6 +469,9 @@ export default function AnalyzePage() {
           .video-actions {
             flex-direction: column;
             width: 100%;
+          }
+          .profile-grid {
+            grid-template-columns: 1fr 1fr;
           }
         }
       `}</style>

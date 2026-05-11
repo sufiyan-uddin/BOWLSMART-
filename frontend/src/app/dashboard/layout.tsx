@@ -13,6 +13,8 @@ import {
 } from 'lucide-react';
 import { useState } from 'react';
 import { usePathname } from 'next/navigation';
+import { AuthGuard } from '@/lib/auth-guard';
+import { useAuth } from '@/lib/auth-context';
 
 const sidebarItems = [
   { href: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
@@ -27,8 +29,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const pathname = usePathname();
+  const { user, signOut } = useAuth();
 
   return (
+    <AuthGuard>
     <div className="app-layout">
       {/* Mobile overlay */}
       {mobileOpen && <div className="sidebar-overlay" onClick={() => setMobileOpen(false)} />}
@@ -69,10 +73,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <Settings size={20} />
             {!sidebarCollapsed && <span>Settings</span>}
           </Link>
-          <Link href="/" className="sidebar-item" onClick={() => setMobileOpen(false)}>
+          <button className="sidebar-item" onClick={async () => { await signOut(); }} style={{ width: '100%', border: 'none', background: 'none', cursor: 'pointer', textAlign: 'left' }}>
             <LogOut size={20} />
             {!sidebarCollapsed && <span>Log Out</span>}
-          </Link>
+          </button>
         </div>
       </aside>
 
@@ -276,5 +280,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         }
       `}</style>
     </div>
+    </AuthGuard>
   );
 }
